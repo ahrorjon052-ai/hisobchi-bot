@@ -23,7 +23,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- HEALTH CHECK SERVER (Render uchun) ---
+# --- HEALTH CHECK SERVER (Render uchun muhim) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -118,4 +118,53 @@ async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = c.fetchall()
     kirim = sum(r[1] for r in rows if r[0] == "Kirim")
     chiqim = sum(r[1] for r in rows if r[0] == "Chiqim")
-    await update.message.reply_text(f"➕ Kirim: {kirim}\n➖ Chiq
+    await update.message.reply_text(f"➕ Kirim: {kirim} so'm\n➖ Chiqim: {chiqim} so'm\n💳 Balans: {kirim-chiqim} so'm")
+
+async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await filter_subscribers(update, context): return
+    conn = sqlite3.connect('finance_bot.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC LIMIT 10", (update.effective_user.id,))
+    rows = c.fetchall()
+    if rows:
+        report = "📋 Oxirgi amallar:\n\n" + "\n".join([f"{r[4]} | {r[1]}: {r[2]} so'm | {r[3]}" for r in rows])
+        await update.message.reply_text(report)
+    else:
+        await update.message.reply_text("Hozircha ma'lumot yo'q.")
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await filter_subscribers(update, context): return
+    conn = sqlite3.connect('finance_bot.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM transactions WHERE user_id=?", (update.effective_user.id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🔄 Tozalandi.", reply_markup=main_menu_keyboard())
+
+# --- ASOSIY ---
+if __name__ == '__main__':
+    init_db()
+    
+    # Render uchun portni ochish (alohida oqimda)
+    threading.Thread(target=run_health_check, daemon=True).start()
+    
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex('^(➕ Kirim|➖ Chiqim)$'), start_transaction)],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reason)],
+        },
+        fallbacks=[CommandHandler('cancel', start)],
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(check_button_callback, pattern="check_subs"))
+    app.add_handler(MessageHandler(filters.Regex('^📊 Balans$'), show_balance))
+    app.add_handler(MessageHandler(filters.Regex('^📅 Hisobot$'), show_report))
+    app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart))
+    app.add_handler(conv_handler)
+
+    print("Bot Render-da ishga tushdi...")
+    app.run_polling()

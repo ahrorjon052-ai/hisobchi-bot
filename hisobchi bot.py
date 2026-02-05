@@ -181,4 +181,24 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
 
     print("Bot ishlamoqda...")
+   import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# Render port xatosini to'g'irlash uchun
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(bytes("Bot is alive!", "utf-8"))
+
+def run_health_check():
+    port = int(os.environ.get("PORT", 8080))
+    httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    httpd.serve_forever()
+
+# Serverni alohida oqimda ishga tushiramiz
+threading.Thread(target=run_health_check, daemon=True).start()
     app.run_polling()
+

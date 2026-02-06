@@ -1,23 +1,17 @@
 import logging
 import sqlite3
-import os
-import threading
 from datetime import datetime, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
 
-# --- 1. SOZLAMALAR ---
-# Tokenni Render Dashboard -> Environment Variables bo'limiga BOT_TOKEN nomi bilan kiriting
-BOT_TOKEN = os.environ.get("8432133239:AAGS7zLGDg8JFfZPIfIdAMd4al61tMze4WY")
+# --- SOZLAMALAR ---
+BOT_TOKEN = "8350521805:AAFM4fJIn6TSvAmBRnLqx5YILWgFWS0maes"
+CHANNEL_ID = "@qashqirlar_makoniuzbek" # Kanal username'i (@ bilan)
 
-# Loglarni sozlash (xatolarni ko'rish uchun)
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# Conversation states
+# Holatlar
 AMOUNT, REASON = range(2)
 
-# --- 2. BAZA BILAN ISHLASH ---
+# --- BAZA BILAN ISHLASH ---
 def init_db():
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
@@ -26,22 +20,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- 3. HEALTH CHECK SERVER ---
-# Render "Web Service" sifatida botni o'chirib qo'ymasligi uchun portni band qilish kerak
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(bytes("Bot is running perfectly!", "utf-8"))
-
-def run_health_check():
-    port = int(os.environ.get("PORT", 8080))
-    httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"Health Check server {port}-portda ishga tushdi.")
-    httpd.serve_forever()
-
-# --- 4. KLAVIATURA ---
+# --- ASOSIY KLAVIATURA ---
 def main_menu_keyboard():
     keyboard = [
         [KeyboardButton("➕ Kirim"), KeyboardButton("➖ Chiqim")],
@@ -50,33 +29,71 @@ def main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- 5. ASOSIY FUNKSIYALAR ---
+# --- OBUNANI TEKSHIRISH FUNKSIYASI ---
+async def is_subscribed(user_id, context):
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except:
+        return False
+
+# --- START VA OBUNA ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Xush kelibsiz! Men sizning shaxsiy moliya yordamchingizman.\n"
-        "Kerakli bo'limni tanlang:",
-        reply_markup=main_menu_keyboard()
-    )
+    user_id = update.effective_user.id
+    
+    if await is_subscribed(user_id, context):
+        await update.message.reply_text("📌 Asosiy menyu", reply_markup=main_menu_keyboard())
+    else:
+        keyboard = [
+            [InlineKeyboardButton("Kanalga a'zo bo'lish", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+            [InlineKeyboardButton("Obuna bo'ldim ✅", callback_data="check_subs")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"Botdan foydalanish uchun {CHANNEL_ID} kanaliga a'zo bo'ling va pastdagi tugmani bosing!",
+            reply_markup=reply_markup
+        )
+
+async def check_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if await is_subscribed(user_id, context):
+        await query.answer("Rahmat! Obuna tasdiqlandi.")
+        await query.message.delete() # Obuna so'ralgan xabarni o'chirib tashlaydi
+        await query.message.reply_text("✅ Xush kelibsiz! Bot ishga tushdi.", reply_markup=main_menu_keyboard())
+    else:
+        await query.answer("Siz hali kanalga a'zo emassiz! ❌", show_alert=True)
+
+# --- KIRIM/CHIQIM VA BOSHQA FUNKSIYALAR ---
+async def filter_subscribers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Obuna bo'lmaganlarga bot ishlamasligini ta'minlovchi filtr"""
+    user_id = update.effective_user.id
+    if not await is_subscribed(user_id, context):
+        await start(update, context)
+        return False
+    return True
 
 async def start_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    context.user_data['type'] = "Kirim" if "➕" in text else "Chiqim"
-    await update.message.reply_text(
-        f"{context.user_data['type']} summasini kiriting:",
-        reply_markup=ReplyKeyboardMarkup([["❌ Bekor qilish"]], resize_keyboard=True)
-    )
+    if not await filter_subscribers(update, context): return
+    msg = update.message.text
+    context.user_data['type'] = "Kirim" if "➕" in msg else "Chiqim"
+    await update.message.reply_text(f"{context.user_data['type']} summasini kiriting:", 
+                                   reply_markup=ReplyKeyboardMarkup([["❌ Bekor qilish"]], resize_keyboard=True))
     return AMOUNT
 
 async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
-        await update.message.reply_text("Amal bekor qilindi.", reply_markup=main_menu_keyboard())
+        await update.message.reply_text("Bekor qilindi.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
     try:
         context.user_data['amount'] = float(update.message.text)
-        await update.message.reply_text("Sababini (nima uchunligini) kiriting:")
+        await update.message.reply_text("Sababini kiriting:")
         return REASON
     except ValueError:
-        await update.message.reply_text("Iltimos, faqat raqam kiriting (masalan: 50000):")
+        await update.message.reply_text("Faqat raqam kiriting!")
         return AMOUNT
 
 async def get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,84 +110,75 @@ async def get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     emoji = "✅" if t_type == "Kirim" else "❌"
-    await update.message.reply_text(
-        f"{emoji} Saqlandi!\n💰 Summa: {amount:,.0f} so'm\n📌 Sabab: {reason}",
-        reply_markup=main_menu_keyboard()
-    )
+    await update.message.reply_text(f"{emoji} {amount} so'm {t_type.lower()} qo'shildi.\n📌 Sabab: {reason}", 
+                                   reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await filter_subscribers(update, context): return
     user_id = update.effective_user.id
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
     c.execute("SELECT type, amount FROM transactions WHERE user_id=?", (user_id,))
     rows = c.fetchall()
-    conn.close()
     
     kirim = sum(r[1] for r in rows if r[0] == "Kirim")
     chiqim = sum(r[1] for r in rows if r[0] == "Chiqim")
-    
-    text = (f"💰 Umumiy balansingiz:\n\n"
-            f"➕ Kirim: {kirim:,.0f} so'm\n"
-            f"➖ Chiqim: {chiqim:,.0f} so'm\n"
-            f"💳 Sof balans: {(kirim - chiqim):,.0f} so'm")
+    text = (f"📅 {datetime.now().strftime('%Y-%m-%d')}\n\n"
+            f"➕ Kirim: {kirim} so'm\n➖ Chiqim: {chiqim} so'm\n"
+            f"💳 Balans: {kirim - chiqim} so'm")
     await update.message.reply_text(text)
 
 async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await filter_subscribers(update, context): return
     user_id = update.effective_user.id
     one_month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM transactions WHERE user_id=? AND date >= ? ORDER BY date DESC", (user_id, one_month_ago))
+    c.execute("SELECT * FROM transactions WHERE user_id=? AND date >= ?", (user_id, one_month_ago))
     rows = c.fetchall()
-    conn.close()
     
     if not rows:
-        await update.message.reply_text("Oxirgi 30 kunda ma'lumotlar mavjud emas.")
+        await update.message.reply_text("Ma'lumot topilmadi.")
         return
 
-    report = "📋 Oxirgi 1 oylik hisobot:\n\n"
-    for r in rows[:15]:
-        sign = "➕" if r[1] == "Kirim" else "➖"
-        report += f"🕒 {r[4][5:16]} | {sign}{r[2]:,.0f} | {r[3]}\n"
+    report = "📋 1 oylik hisobot:\n\n"
+    for r in rows:
+        sign = "+" if r[1] == "Kirim" else "-"
+        report += f"🕒 {r[4]} | {sign}{r[2]} | {r[3]}\n"
     await update.message.reply_text(report)
 
-async def restart_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await filter_subscribers(update, context): return
     user_id = update.effective_user.id
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
     c.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
-    await update.message.reply_text("🔄 Barcha ma'lumotlaringiz o'chirildi.", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("🔄 Tarix tozalandi.", reply_markup=main_menu_keyboard())
 
-# --- 6. ISHGA TUSHIRISH ---
+# --- ASOSIY ---
 if __name__ == '__main__':
-    if not BOT_TOKEN:
-        print("XATO: BOT_TOKEN topilmadi! Render Environment Variables'ni tekshiring.")
-    else:
-        init_db()
-        
-        # Health Check serverni parallel threadda ishga tushirish
-        threading.Thread(target=run_health_check, daemon=True).start()
-        
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-        conv_handler = ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex('^(➕ Kirim|➖ Chiqim)$'), start_transaction)],
-            states={
-                AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
-                REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reason)],
-            },
-            fallbacks=[CommandHandler('start', start)],
-        )
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex('^(➕ Kirim|➖ Chiqim)$'), start_transaction)],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reason)],
+        },
+        fallbacks=[CommandHandler('cancel', start)],
+    )
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.Regex('^📊 Balans$'), show_balance))
-        app.add_handler(MessageHandler(filters.Regex('^📅 Hisobot$'), show_report))
-        app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart_history))
-        app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(check_button_callback, pattern="check_subs"))
+    app.add_handler(MessageHandler(filters.Regex('^📊 Balans$'), show_balance))
+    app.add_handler(MessageHandler(filters.Regex('^📅 Hisobot$'), show_report))
+    app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart))
+    app.add_handler(conv_handler)
 
-        print("Bot polling rejimida ishlamoqda...")
-        app.run_polling(poll_interval=1.0)
+    print("Bot ishlamoqda...")
+    app.run_polling()

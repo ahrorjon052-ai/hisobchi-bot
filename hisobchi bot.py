@@ -7,15 +7,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
 
-# --- SOZLAMALAR ---
-# DIQQAT: Tokenni Render dashboardidagi Environment Variables bo'limiga joylang!
-# Agar hozircha kodda qoldirsangiz, keyinchalik xavfsizlik uchun almashtiring.
-BOT_TOKEN = os.environ.get("8350521805:AAFM4fJIn6TSvAmBRnLqx5YILWgFWS0maes")
+# --- 1. SOZLAMALAR ---
+# Tokenni Render Dashboard -> Environment Variables bo'limiga BOT_TOKEN nomi bilan kiriting
+BOT_TOKEN = os.environ.get("8432133239:AAGS7zLGDg8JFfZPIfIdAMd4al61tMze4WY")
 
-# Holatlar
+# Loglarni sozlash (xatolarni ko'rish uchun)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# Conversation states
 AMOUNT, REASON = range(2)
 
-# --- BAZA BILAN ISHLASH ---
+# --- 2. BAZA BILAN ISHLASH ---
 def init_db():
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
@@ -24,22 +26,22 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- HEALTH CHECK SERVER (Render o'chib qolmasligi uchun) ---
+# --- 3. HEALTH CHECK SERVER ---
+# Render "Web Service" sifatida botni o'chirib qo'ymasligi uchun portni band qilish kerak
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(bytes("Bot is alive!", "utf-8"))
+        self.wfile.write(bytes("Bot is running perfectly!", "utf-8"))
 
 def run_health_check():
-    # Render avtomatik ravishda PORT o'zgaruvchisini beradi
     port = int(os.environ.get("PORT", 8080))
     httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"Health check server {port}-portda ishlamoqda...")
+    print(f"Health Check server {port}-portda ishga tushdi.")
     httpd.serve_forever()
 
-# --- KLAVIATURA ---
+# --- 4. KLAVIATURA ---
 def main_menu_keyboard():
     keyboard = [
         [KeyboardButton("➕ Kirim"), KeyboardButton("➖ Chiqim")],
@@ -48,10 +50,10 @@ def main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- FUNKSIYALAR ---
+# --- 5. ASOSIY FUNKSIYALAR ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Xush kelibsiz! Men sizning shaxsiy moliya yordamchingizman.\n\n"
+        "👋 Xush kelibsiz! Men sizning shaxsiy moliya yordamchingizman.\n"
         "Kerakli bo'limni tanlang:",
         reply_markup=main_menu_keyboard()
     )
@@ -92,7 +94,7 @@ async def get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     emoji = "✅" if t_type == "Kirim" else "❌"
     await update.message.reply_text(
-        f"{emoji} Saqlandi!\n💰 Summa: {amount} so'm\n📌 Sabab: {reason}",
+        f"{emoji} Saqlandi!\n💰 Summa: {amount:,.0f} so'm\n📌 Sabab: {reason}",
         reply_markup=main_menu_keyboard()
     )
     return ConversationHandler.END
@@ -117,6 +119,7 @@ async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     one_month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
     c.execute("SELECT * FROM transactions WHERE user_id=? AND date >= ? ORDER BY date DESC", (user_id, one_month_ago))
@@ -140,39 +143,34 @@ async def restart_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
-    await update.message.reply_text("🔄 Barcha ma'lumotlaringiz o'chirib tashlandi.", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("🔄 Barcha ma'lumotlaringiz o'chirildi.", reply_markup=main_menu_keyboard())
 
-# --- ASOSIY ---
+# --- 6. ISHGA TUSHIRISH ---
 if __name__ == '__main__':
-    # 1. Bazani tayyorlash
-    init_db()
-    
-    # 2. Render portni eshitishi uchun Health Check serverni ishga tushirish
-    # Bu Render'dagi "Web Service" o'chib qolmasligi uchun kerak
-    threading.Thread(target=run_health_check, daemon=True).start()
-    
-    # 3. Botni sozlash
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    if not BOT_TOKEN:
+        print("XATO: BOT_TOKEN topilmadi! Render Environment Variables'ni tekshiring.")
+    else:
+        init_db()
+        
+        # Health Check serverni parallel threadda ishga tushirish
+        threading.Thread(target=run_health_check, daemon=True).start()
+        
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Conversation Handler (Kirim/Chiqim uchun)
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('^(➕ Kirim|➖ Chiqim)$'), start_transaction)],
-        states={
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
-            REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reason)],
-        },
-        fallbacks=[CommandHandler('start', start)],
-    )
+        conv_handler = ConversationHandler(
+            entry_points=[MessageHandler(filters.Regex('^(➕ Kirim|➖ Chiqim)$'), start_transaction)],
+            states={
+                AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+                REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reason)],
+            },
+            fallbacks=[CommandHandler('start', start)],
+        )
 
-    # Handlerlarni qo'shish
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex('^📊 Balans$'), show_balance))
-    app.add_handler(MessageHandler(filters.Regex('^📅 Hisobot$'), show_report))
-    app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart_history))
-    app.add_handler(conv_handler)
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.Regex('^📊 Balans$'), show_balance))
+        app.add_handler(MessageHandler(filters.Regex('^📅 Hisobot$'), show_report))
+        app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart_history))
+        app.add_handler(conv_handler)
 
-    print("Bot polling rejimida ishga tushdi...")
-    
-    # 4. Pollingni ishga tushirish
-    # poll_interval Renderda ulanish barqaror bo'lishiga yordam beradi
-    app.run_polling(poll_interval=1.0)
+        print("Bot polling rejimida ishlamoqda...")
+        app.run_polling(poll_interval=1.0)

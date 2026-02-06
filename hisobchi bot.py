@@ -2,14 +2,30 @@ import logging
 import sqlite3
 import os
 from datetime import datetime, timedelta
+from threading import Thread
+from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
 
-# --- SOZLAMALAR ---
-# Xavfsizlik uchun tokenni o'zgaruvchidan yoki muhitdan olish yaxshi
+# --- FLASK SERVER (RENDER PORTI UCHUN) ---
+app_flask = Flask('')
+
+@app_flask.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run():
+    # Render avtomatik beradigan PORT yoki 8080 ni ishlatadi
+    port = int(os.environ.get('PORT', 8080))
+    app_flask.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# --- BOT SOZLAMALARI ---
 BOT_TOKEN = "8350521805:AAFM4fJIn6TSvAmBRnLqx5YILWgFWS0maes"
-CHANNEL_ID = "@qashqirlar_makoniuzbek" 
-PORT = int(os.environ.get('PORT', '8443')) # Portni muhitdan oladi yoki 8443 dan foydalanadi
+CHANNEL_ID = "@qashqirlar_makoniuzbek"
 
 # Holatlar
 AMOUNT, REASON = range(2)
@@ -154,9 +170,14 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     await update.message.reply_text("🔄 Tarix tozalandi.", reply_markup=main_menu_keyboard())
 
-# --- MAIN ---
+# --- ASOSIY ISHGA TUSHIRISH ---
 if __name__ == '__main__':
     init_db()
+    
+    # 1. Portni band qilish uchun Flaskni alohida thread'da boshlash
+    keep_alive()
+    
+    # 2. Telegram Botni boshlash
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -175,9 +196,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart))
     app.add_handler(conv_handler)
 
-    print(f"Bot {PORT} portida ishga tushmoqda...")
-    
-    # Portda ishlashi uchun Webhook yoki Polling'ni port bilan sozlash:
-    # Render yoki shunga o'xshash servislar uchun run_polling ham ishlayveradi, 
-    # lekin PORT o'zgaruvchisini aniqlash majburiy.
-    app.run_polling(poll_interval=1.0)
+    print("Bot va Flask server ishga tushdi...")
+    app.run_polling()

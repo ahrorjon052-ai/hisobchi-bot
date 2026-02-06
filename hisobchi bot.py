@@ -1,15 +1,21 @@
 import logging
 import sqlite3
+import os
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
 
 # --- SOZLAMALAR ---
+# Xavfsizlik uchun tokenni o'zgaruvchidan yoki muhitdan olish yaxshi
 BOT_TOKEN = "8350521805:AAFM4fJIn6TSvAmBRnLqx5YILWgFWS0maes"
-CHANNEL_ID = "@qashqirlar_makoniuzbek" # Kanal username'i (@ bilan)
+CHANNEL_ID = "@qashqirlar_makoniuzbek" 
+PORT = int(os.environ.get('PORT', '8443')) # Portni muhitdan oladi yoki 8443 dan foydalanadi
 
 # Holatlar
 AMOUNT, REASON = range(2)
+
+# Loglash
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- BAZA BILAN ISHLASH ---
 def init_db():
@@ -29,20 +35,17 @@ def main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- OBUNANI TEKSHIRISH FUNKSIYASI ---
+# --- OBUNANI TEKSHIRISH ---
 async def is_subscribed(user_id, context):
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        if member.status in ['member', 'administrator', 'creator']:
-            return True
-        return False
-    except:
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception:
         return False
 
-# --- START VA OBUNA ---
+# --- HANDLERLAR ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if await is_subscribed(user_id, context):
         await update.message.reply_text("📌 Asosiy menyu", reply_markup=main_menu_keyboard())
     else:
@@ -50,36 +53,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Kanalga a'zo bo'lish", url=f"https://t.me/{CHANNEL_ID[1:]}")],
             [InlineKeyboardButton("Obuna bo'ldim ✅", callback_data="check_subs")]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            f"Botdan foydalanish uchun {CHANNEL_ID} kanaliga a'zo bo'ling va pastdagi tugmani bosing!",
-            reply_markup=reply_markup
+            f"Botdan foydalanish uchun {CHANNEL_ID} kanaliga a'zo bo'ling!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 async def check_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    
-    if await is_subscribed(user_id, context):
+    if await is_subscribed(query.from_user.id, context):
         await query.answer("Rahmat! Obuna tasdiqlandi.")
-        await query.message.delete() # Obuna so'ralgan xabarni o'chirib tashlaydi
-        await query.message.reply_text("✅ Xush kelibsiz! Bot ishga tushdi.", reply_markup=main_menu_keyboard())
+        await query.message.delete()
+        await query.message.reply_text("✅ Xush kelibsiz!", reply_markup=main_menu_keyboard())
     else:
         await query.answer("Siz hali kanalga a'zo emassiz! ❌", show_alert=True)
 
-# --- KIRIM/CHIQIM VA BOSHQA FUNKSIYALAR ---
 async def filter_subscribers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Obuna bo'lmaganlarga bot ishlamasligini ta'minlovchi filtr"""
-    user_id = update.effective_user.id
-    if not await is_subscribed(user_id, context):
+    if not await is_subscribed(update.effective_user.id, context):
         await start(update, context)
         return False
     return True
 
 async def start_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await filter_subscribers(update, context): return
-    msg = update.message.text
-    context.user_data['type'] = "Kirim" if "➕" in msg else "Chiqim"
+    context.user_data['type'] = "Kirim" if "➕" in update.message.text else "Chiqim"
     await update.message.reply_text(f"{context.user_data['type']} summasini kiriting:", 
                                    reply_markup=ReplyKeyboardMarkup([["❌ Bekor qilish"]], resize_keyboard=True))
     return AMOUNT
@@ -110,17 +106,16 @@ async def get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     emoji = "✅" if t_type == "Kirim" else "❌"
-    await update.message.reply_text(f"{emoji} {amount} so'm {t_type.lower()} qo'shildi.\n📌 Sabab: {reason}", 
-                                   reply_markup=main_menu_keyboard())
+    await update.message.reply_text(f"{emoji} {amount} so'm qo'shildi.\n📌 Sabab: {reason}", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await filter_subscribers(update, context): return
-    user_id = update.effective_user.id
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
-    c.execute("SELECT type, amount FROM transactions WHERE user_id=?", (user_id,))
+    c.execute("SELECT type, amount FROM transactions WHERE user_id=?", (update.effective_user.id,))
     rows = c.fetchall()
+    conn.close()
     
     kirim = sum(r[1] for r in rows if r[0] == "Kirim")
     chiqim = sum(r[1] for r in rows if r[0] == "Chiqim")
@@ -138,6 +133,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = conn.cursor()
     c.execute("SELECT * FROM transactions WHERE user_id=? AND date >= ?", (user_id, one_month_ago))
     rows = c.fetchall()
+    conn.close()
     
     if not rows:
         await update.message.reply_text("Ma'lumot topilmadi.")
@@ -151,15 +147,14 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await filter_subscribers(update, context): return
-    user_id = update.effective_user.id
     conn = sqlite3.connect('finance_bot.db')
     c = conn.cursor()
-    c.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
+    c.execute("DELETE FROM transactions WHERE user_id=?", (update.effective_user.id,))
     conn.commit()
     conn.close()
     await update.message.reply_text("🔄 Tarix tozalandi.", reply_markup=main_menu_keyboard())
 
-# --- ASOSIY ---
+# --- MAIN ---
 if __name__ == '__main__':
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -180,5 +175,9 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex('^🔄 Restart$'), restart))
     app.add_handler(conv_handler)
 
-    print("Bot ishlamoqda...")
-    app.run_polling()
+    print(f"Bot {PORT} portida ishga tushmoqda...")
+    
+    # Portda ishlashi uchun Webhook yoki Polling'ni port bilan sozlash:
+    # Render yoki shunga o'xshash servislar uchun run_polling ham ishlayveradi, 
+    # lekin PORT o'zgaruvchisini aniqlash majburiy.
+    app.run_polling(poll_interval=1.0)
